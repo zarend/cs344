@@ -80,6 +80,56 @@
 */
 
 #include "utils.h"
+#include <cmath>
+#include <stdio.h>
+
+#define DEBUG 1
+
+#define MAX(a, b) (a) > (b) ? (a) : (b)
+#define MIN(a, b) (a) < (b) ? (a) : (b)
+
+#define MAX_THREADS_PER_BLOCK 1024
+
+enum opps {
+  MIN,
+  MAX
+};
+
+unsigned int nextPow2(unsigned int a) {
+  double y = log2((double)a);
+  int exponent = y + 0.5;
+
+  return 1 << exponent;
+}
+
+__global__
+void reduce(float* d_in, float* d_out, int length, int opp) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  for (int offset = blockDim.x; offset; offset /= 2) {
+    if (threadIdx.x >= offset || idx + offset >= length) {
+      continue;
+    }
+
+    float f1 = d_in[idx];
+    float f2 = d_in[idx + offset];
+
+    if (opp == MAX) {
+      if (f2 > f1) {
+        d_in[idx] = f2;
+      }
+    }
+    else if (opp == MIN) {
+      if (f2 < f1) {
+        d_in[idx] = f1;
+      }
+    }
+
+    __syncthreads();
+  }
+
+  d_out[blockIdx.x] = d_in[blockIdx.x * blockDim.x];
+}
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
@@ -100,5 +150,35 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
 
+  int numCells = numRows * numCols;
+  int size = sizeof(float) * numCells;
+  unsigned int offset = nextPow2(numCells) / 2;
 
+  float *d_luminance_cpy;   // make a copy of d_logLuminance
+  checkCudaErrors(cudaMalloc(&d_luminance_cpy, size));
+  checkCudaErrors(cudaMemcpy(d_luminance_cpy, d_logLuminance, size, cudaMemcpyDeviceToDevice));
+
+  const dim3 blockSize(MAX_THREADS_PER_BLOCK, 1, 1);
+  const dim3 gridSize(numCells/blockSize.x + 1, 1, 1);
+
+  float *round2Arr;
+  checkCudaErrors(cudaMalloc(&round2Arr, sizeof(float)*gridSize.x));
+
+  reduce<<<gridSize, blockSize>>>(d_luminance_cpy, round2Arr, numCells, MAX);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+  reduce<<<gridSize, blockSize>>>(round2Arr, round2Arr, gridSize.x, MAX);
+  checkCudaErrors(cudaMemcpy(&max_logLum, round2Arr, sizeof(float), cudaMemcpyDeviceToHost));
+
+  // restore d_luminance_cpy
+  checkCudaErrors(cudaMemcpy(d_luminance_cpy, d_logLuminance, size, cudaMemcpyDeviceToDevice));
+
+  reduce<<<gridSize, blockSize>>>(d_luminance_cpy, round2Arr, numCells, MIN);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+  reduce<<<gridSize, blockSize>>>(round2Arr, round2Arr, gridSize.x, MIN);
+  checkCudaErrors(cudaMemcpy(&min_logLum, round2Arr, sizeof(float), cudaMemcpyDeviceToHost));
+
+  #if DEBUG
+    printf("numCells: %d\n", numCells);
+    printf("min_logLum: %f, max_logLum: %f\n", min_logLum, max_logLum); // should be (-4.0, 2.189105)
+  #endif
 }
