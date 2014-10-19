@@ -83,7 +83,7 @@
 #include <cmath>
 #include <stdio.h>
 
-#define DEBUG 1
+#define DEBUG 0
 
 #define MAX(a, b) (a) > (b) ? (a) : (b)
 #define MIN(a, b) (a) < (b) ? (a) : (b)
@@ -131,6 +131,22 @@ void reduce(float* d_in, float* d_out, int length, int opp) {
   d_out[blockIdx.x] = d_in[blockIdx.x * blockDim.x];
 }
 
+__global__
+void histofy(float* d_luminance, int *d_histo, int length, float lumMin, float lumRange, int numBins) {
+  //bin = (lum[i] - lumMin) / lumRange * numBins
+
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (idx >= length) {
+    return;
+  }
+
+  int bin = (d_luminance[idx] - lumMin) / lumRange * numBins;
+
+  atomicAdd(d_histo + bin, 1);
+
+}
+
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
                                   float &min_logLum,
@@ -150,6 +166,7 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
 
+  /*** #1 ***/
   int numCells = numRows * numCols;
   int size = sizeof(float) * numCells;
   unsigned int offset = nextPow2(numCells) / 2;
@@ -181,4 +198,30 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     printf("numCells: %d\n", numCells);
     printf("min_logLum: %f, max_logLum: %f\n", min_logLum, max_logLum); // should be (-4.0, 2.189105)
   #endif
+
+  /*** #2***/
+  float lumRange = max_logLum - min_logLum;
+
+  /*** #3 ***/
+  int histo_size = sizeof(int)*numBins;
+
+  // restore d_luminance_cpy
+  checkCudaErrors(cudaMemcpy(d_luminance_cpy, d_logLuminance, size, cudaMemcpyDeviceToDevice));
+
+  int* d_histo;
+  checkCudaErrors(cudaMalloc(&d_histo, histo_size));
+  checkCudaErrors(cudaMemset(d_histo, 0, histo_size));
+
+  //void histofy(float* d_luminance, int length, float lumMin, float lumRange, int numBins) 
+  histofy<<<gridSize, blockSize>>>(d_luminance_cpy, d_histo, numCells, min_logLum, lumRange, numBins);
+
+  /*** #4 ***/
+  int* h_histo = (int *)calloc(histo_size, 1);
+  checkCudaErrors(cudaMemcpy(h_histo, d_histo, histo_size, cudaMemcpyDeviceToHost));
+
+  for (int i = 1; i < numBins; i++) {
+    h_histo[i] += h_histo[i - 1];
+  }
+
+  checkCudaErrors(cudaMemcpy(d_cdf, h_histo, histo_size, cudaMemcpyHostToDevice));
 }
