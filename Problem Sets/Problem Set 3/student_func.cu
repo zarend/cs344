@@ -104,31 +104,43 @@ unsigned int nextPow2(unsigned int a) {
 
 __global__
 void reduce(float* d_in, float* d_out, int length, int opp) {
+  extern __shared__ float sdata[];
+
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-  for (int offset = blockDim.x; offset; offset /= 2) {
+  if (idx > length) {
+    return;
+  }
+
+  sdata[threadIdx.x] = d_in[idx];
+
+  for (int offset = blockDim.x/2; offset; offset /= 2) {
     if (threadIdx.x >= offset || idx + offset >= length) {
       continue;
     }
 
-    float f1 = d_in[idx];
-    float f2 = d_in[idx + offset];
+    float f1 = sdata[threadIdx.x];
+    float f2 = sdata[threadIdx.x + offset];
 
     if (opp == MAX) {
       if (f2 > f1) {
-        d_in[idx] = f2;
+        sdata[threadIdx.x] = f2;
       }
     }
     else if (opp == MIN) {
       if (f2 < f1) {
-        d_in[idx] = f1;
+        sdata[threadIdx.x] = f1;
       }
     }
 
     __syncthreads();
   }
 
-  d_out[blockIdx.x] = d_in[blockIdx.x * blockDim.x];
+  //d_out[blockIdx.x] = d_in[blockIdx.x * blockDim.x];
+
+  if (threadIdx.x == 0) { // this block is a stub
+    d_out[blockIdx.x] = sdata[threadIdx.x];
+  }
 }
 
 __global__
@@ -178,20 +190,22 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   const dim3 blockSize(MAX_THREADS_PER_BLOCK, 1, 1);
   const dim3 gridSize(numCells/blockSize.x + 1, 1, 1);
 
+  int sharedSize = blockSize.x * sizeof(float);
+
   float *round2Arr;
   checkCudaErrors(cudaMalloc(&round2Arr, sizeof(float)*gridSize.x));
 
-  reduce<<<gridSize, blockSize>>>(d_luminance_cpy, round2Arr, numCells, MAX);
+  reduce<<<gridSize, blockSize, sharedSize>>>(d_luminance_cpy, round2Arr, numCells, MAX);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-  reduce<<<gridSize, blockSize>>>(round2Arr, round2Arr, gridSize.x, MAX);
+  reduce<<<gridSize, blockSize, sharedSize>>>(round2Arr, round2Arr, gridSize.x, MAX);
   checkCudaErrors(cudaMemcpy(&max_logLum, round2Arr, sizeof(float), cudaMemcpyDeviceToHost));
 
   // restore d_luminance_cpy
   checkCudaErrors(cudaMemcpy(d_luminance_cpy, d_logLuminance, size, cudaMemcpyDeviceToDevice));
 
-  reduce<<<gridSize, blockSize>>>(d_luminance_cpy, round2Arr, numCells, MIN);
+  reduce<<<gridSize, blockSize, sharedSize>>>(d_luminance_cpy, round2Arr, numCells, MIN);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-  reduce<<<gridSize, blockSize>>>(round2Arr, round2Arr, gridSize.x, MIN);
+  reduce<<<gridSize, blockSize, sharedSize>>>(round2Arr, round2Arr, gridSize.x, MIN);
   checkCudaErrors(cudaMemcpy(&min_logLum, round2Arr, sizeof(float), cudaMemcpyDeviceToHost));
 
   #if DEBUG
