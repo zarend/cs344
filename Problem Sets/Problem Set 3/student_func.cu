@@ -142,18 +142,25 @@ void reduce(float* d_in, float* d_out, int length, int opp) {
 }
 
 __global__
-void histofy(float* d_luminance, int *d_histo, int length, float lumMin, float lumRange, int numBins) {
-  //bin = (lum[i] - lumMin) / lumRange * numBins
+void histofy(float* d_luminance, int *d_histo, int length, float lumMin, float lumRange, int numBins, int size) {
+  extern __shared__ int shisto[];
 
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  shisto[threadIdx.x] = 0;
+  __syncthreads();
 
-  if (idx >= length) {
-    return;
+  for (int idx = blockIdx.x * blockDim.x + threadIdx.x; idx < length; idx += size) {
+    int bin = (d_luminance[idx] - lumMin) / lumRange * numBins;
+
+    if (bin < numBins) {
+      atomicAdd(shisto + bin, 1);
+    }
   }
 
-  int bin = (d_luminance[idx] - lumMin) / lumRange * numBins;
-
-  atomicAdd(d_histo + bin, 1);
+  __syncthreads();
+  
+  if (threadIdx.x < numBins) {
+    atomicAdd(d_histo + threadIdx.x, shisto[threadIdx.x]);
+  }
 
 }
 
@@ -223,8 +230,11 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   checkCudaErrors(cudaMalloc(&d_histo, histo_size));
   checkCudaErrors(cudaMemset(d_histo, 0, histo_size));
 
+  int numBlocks = 56; // any more than 56 causes unspecified launch error
+  int numThreadsPerBlock = MAX_THREADS_PER_BLOCK;
+
   //void histofy(float* d_luminance, int length, float lumMin, float lumRange, int numBins) 
-  histofy<<<gridSize, blockSize>>>(d_luminance_cpy, d_histo, numCells, min_logLum, lumRange, numBins);
+  histofy<<<numBlocks, numThreadsPerBlock, histo_size>>>(d_luminance_cpy, d_histo, numCells, min_logLum, lumRange, numBins, numBlocks * numThreadsPerBlock);
 
   /*** #4 ***/
   int* h_histo = (int *)calloc(histo_size, 1);
