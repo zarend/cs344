@@ -184,6 +184,26 @@ void histofy(float* d_luminance, int *d_histo, int length, float lumMin, float l
 
 }
 
+__global__
+void histoExclusiveScan(int *d_histo, int numBins) {
+  int idx = threadIdx.x;
+
+  // converts from inclusive to exclusive scan by moving over by one and setting 0th element to 0
+  if (idx) {
+    d_histo[idx] = d_histo[idx - 1];
+  }
+  else {
+    d_histo[idx] = 0;
+  }
+
+  __syncthreads();
+
+  for (int offset = 1; offset < numBins && idx >= offset; offset *= 2) {
+    d_histo[idx] += d_histo[idx - offset];
+    __syncthreads();
+  }
+}
+
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
                                   float &min_logLum,
@@ -235,7 +255,7 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   checkCudaErrors(cudaMemcpy(&min_logLum, round2Arr, sizeof(float), cudaMemcpyDeviceToHost));
 
   #if DEBUG
-    printf("numCells: %d\n", numCells);
+    printf("numCells: %d, numBins: %d\n", numCells, numBins);
     printf("min_logLum: %f, max_logLum: %f\n", min_logLum, max_logLum); // should be (-4.0, 2.189105)
   #endif
 
@@ -269,14 +289,20 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   /*** #4 ***/
   STARTCLOCK(part4);
 
-  int* h_histo = (int *)calloc(histo_size, 1);
+  histoExclusiveScan<<<1, numBins>>>(d_histo, numBins);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+  checkCudaErrors(cudaMemcpy(d_cdf, d_histo, histo_size, cudaMemcpyDeviceToDevice));
+
+  // serial implemntation of part 4
+  /*int* h_histo = (int *)calloc(histo_size, 1);
   checkCudaErrors(cudaMemcpy(h_histo, d_histo, histo_size, cudaMemcpyDeviceToHost));
 
   for (int i = 1; i < numBins; i++) {
     h_histo[i] += h_histo[i - 1];
   }
 
-  checkCudaErrors(cudaMemcpy(d_cdf, h_histo, histo_size, cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMemcpy(d_cdf, h_histo, histo_size, cudaMemcpyHostToDevice));*/
 
   ENDCLOCK(part4);
   ENDCLOCK(wholeProgram);
