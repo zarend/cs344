@@ -162,7 +162,7 @@ void reduce(float* d_in, float* d_out, int length, int opp) {
 }
 
 __global__
-void histofy(float* d_luminance, int *d_histo, int length, float lumMin, float lumRange, int numBins, int size) {
+void histofy(float* d_luminance, unsigned int *d_histo, int length, float lumMin, float lumRange, int numBins, int size) {
   extern __shared__ int shisto[];
 
   shisto[threadIdx.x] = 0;
@@ -185,7 +185,7 @@ void histofy(float* d_luminance, int *d_histo, int length, float lumMin, float l
 }
 
 __global__
-void histoExclusiveScan(int *d_histo, int numBins) {
+void histoExclusiveScan(unsigned int *d_histo, int numBins) {
   int idx = threadIdx.x;
 
   // converts from inclusive to exclusive scan by moving over by one and setting 0th element to 0
@@ -244,6 +244,7 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   reduce<<<gridSize, blockSize, sharedSize>>>(d_luminance_cpy, round2Arr, numCells, MAX);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
   reduce<<<gridSize, blockSize, sharedSize>>>(round2Arr, round2Arr, gridSize.x, MAX);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
   checkCudaErrors(cudaMemcpy(&max_logLum, round2Arr, sizeof(float), cudaMemcpyDeviceToHost));
 
   // restore d_luminance_cpy
@@ -252,6 +253,7 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   reduce<<<gridSize, blockSize, sharedSize>>>(d_luminance_cpy, round2Arr, numCells, MIN);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
   reduce<<<gridSize, blockSize, sharedSize>>>(round2Arr, round2Arr, gridSize.x, MIN);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
   checkCudaErrors(cudaMemcpy(&min_logLum, round2Arr, sizeof(float), cudaMemcpyDeviceToHost));
 
   #if DEBUG
@@ -274,35 +276,19 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   // restore d_luminance_cpy
   checkCudaErrors(cudaMemcpy(d_luminance_cpy, d_logLuminance, size, cudaMemcpyDeviceToDevice));
 
-  int* d_histo;
-  checkCudaErrors(cudaMalloc(&d_histo, histo_size));
-  checkCudaErrors(cudaMemset(d_histo, 0, histo_size));
-
   int numBlocks = 56; // any more than 56 causes unspecified launch error
   int numThreadsPerBlock = MAX_THREADS_PER_BLOCK;
 
-  //void histofy(float* d_luminance, int length, float lumMin, float lumRange, int numBins) 
-  histofy<<<numBlocks, numThreadsPerBlock, histo_size>>>(d_luminance_cpy, d_histo, numCells, min_logLum, lumRange, numBins, numBlocks * numThreadsPerBlock);
+  histofy<<<numBlocks, numThreadsPerBlock, histo_size>>>(d_luminance_cpy, d_cdf, numCells, min_logLum, lumRange, numBins, numBlocks * numThreadsPerBlock);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
   ENDCLOCK(part3);
 
   /*** #4 ***/
   STARTCLOCK(part4);
 
-  histoExclusiveScan<<<1, numBins>>>(d_histo, numBins);
+  histoExclusiveScan<<<1, numBins>>>(d_cdf, numBins);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-
-  checkCudaErrors(cudaMemcpy(d_cdf, d_histo, histo_size, cudaMemcpyDeviceToDevice));
-
-  // serial implemntation of part 4
-  /*int* h_histo = (int *)calloc(histo_size, 1);
-  checkCudaErrors(cudaMemcpy(h_histo, d_histo, histo_size, cudaMemcpyDeviceToHost));
-
-  for (int i = 1; i < numBins; i++) {
-    h_histo[i] += h_histo[i - 1];
-  }
-
-  checkCudaErrors(cudaMemcpy(d_cdf, h_histo, histo_size, cudaMemcpyHostToDevice));*/
 
   ENDCLOCK(part4);
   ENDCLOCK(wholeProgram);
