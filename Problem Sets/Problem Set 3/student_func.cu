@@ -84,6 +84,7 @@
 #include <stdio.h>
 
 #define DEBUG 0
+#define PROFILE 0
 
 #define MAX(a, b) (a) > (b) ? (a) : (b)
 #define MIN(a, b) (a) < (b) ? (a) : (b)
@@ -100,6 +101,25 @@ unsigned int nextPow2(unsigned int a) {
   int exponent = y + 0.5;
 
   return 1 << exponent;
+}
+
+#if PROFILE
+  #define STARTCLOCK(name) clock_t (name) = startClock()
+  #define ENDCLOCK(name) endClock(name, #name)
+#else
+  #define STARTCLOCK(name) 
+  #define ENDCLOCK(name) 
+#endif
+
+
+clock_t startClock() {
+  return clock();
+}
+
+void endClock(clock_t start, char message[]) {
+  clock_t end = clock();
+  double elapsed_secs = double(end - start) / CLOCKS_PER_SEC;
+  printf("[mytimer] %s: %.3lf msec\n", message, elapsed_secs * 1000);
 }
 
 __global__
@@ -182,6 +202,8 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
+  STARTCLOCK(wholeProgram);
+  STARTCLOCK(part1);
 
   /*** #1 ***/
   int numCells = numRows * numCols;
@@ -217,10 +239,16 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     printf("min_logLum: %f, max_logLum: %f\n", min_logLum, max_logLum); // should be (-4.0, 2.189105)
   #endif
 
+  ENDCLOCK(part1);
+
   /*** #2***/
+  STARTCLOCK(part2);
   float lumRange = max_logLum - min_logLum;
+  ENDCLOCK(part2);
 
   /*** #3 ***/
+  STARTCLOCK(part3);
+
   int histo_size = sizeof(int)*numBins;
 
   // restore d_luminance_cpy
@@ -236,7 +264,11 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   //void histofy(float* d_luminance, int length, float lumMin, float lumRange, int numBins) 
   histofy<<<numBlocks, numThreadsPerBlock, histo_size>>>(d_luminance_cpy, d_histo, numCells, min_logLum, lumRange, numBins, numBlocks * numThreadsPerBlock);
 
+  ENDCLOCK(part3);
+
   /*** #4 ***/
+  STARTCLOCK(part4);
+
   int* h_histo = (int *)calloc(histo_size, 1);
   checkCudaErrors(cudaMemcpy(h_histo, d_histo, histo_size, cudaMemcpyDeviceToHost));
 
@@ -245,4 +277,7 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   }
 
   checkCudaErrors(cudaMemcpy(d_cdf, h_histo, histo_size, cudaMemcpyHostToDevice));
+
+  ENDCLOCK(part4);
+  ENDCLOCK(wholeProgram);
 }
