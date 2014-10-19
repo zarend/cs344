@@ -106,33 +106,31 @@ __global__
 void reduce(float* d_in, float* d_out, int length, int opp) {
   extern __shared__ float sdata[];
 
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int globalIdx = blockIdx.x * blockDim.x + threadIdx.x;
 
-  if (idx > length) {
+  if (globalIdx >= length) {
     return;
   }
 
-  sdata[threadIdx.x] = d_in[idx];
+  sdata[threadIdx.x] = d_in[globalIdx];
+  __syncthreads();
 
-  for (int offset = blockDim.x/2; offset; offset /= 2) {
-    if (threadIdx.x >= offset || idx + offset >= length) {
-      continue;
-    }
+  for (int offset = blockDim.x/2; offset && threadIdx.x < offset; offset /= 2) {
+    if (globalIdx + offset < length) {
+      float f1 = sdata[threadIdx.x];
+      float f2 = sdata[threadIdx.x + offset];
 
-    float f1 = sdata[threadIdx.x];
-    float f2 = sdata[threadIdx.x + offset];
-
-    if (opp == MAX) {
-      if (f2 > f1) {
-        sdata[threadIdx.x] = f2;
+      if (opp == MAX) {
+        if (f2 > f1) {
+          sdata[threadIdx.x] = f2;
+        }
+      }
+      else if (opp == MIN) {
+        if (f2 < f1) {
+          sdata[threadIdx.x] = f1;
+        }
       }
     }
-    else if (opp == MIN) {
-      if (f2 < f1) {
-        sdata[threadIdx.x] = f1;
-      }
-    }
-
     __syncthreads();
   }
 
@@ -181,7 +179,6 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
   /*** #1 ***/
   int numCells = numRows * numCols;
   int size = sizeof(float) * numCells;
-  unsigned int offset = nextPow2(numCells) / 2;
 
   float *d_luminance_cpy;   // make a copy of d_logLuminance
   checkCudaErrors(cudaMalloc(&d_luminance_cpy, size));
