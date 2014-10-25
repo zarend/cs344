@@ -42,6 +42,36 @@
 
  */
 
+__global__
+void histo(unsigned int* d_inputVals, unsigned int* d_histo, int startIdx, int endIdx, int bit) {
+  int myId = threadIdx.x + blockDim.x * blockIdx.x;
+  int idx = myId + startIdx;
+
+  if (idx < endIdx) {
+    int bin = (d_inputVals[idx] & (1 << bit)) != 0;
+    atomicAdd(d_histo + bin, 1);
+  }
+}
+
+int sortHelper(unsigned int* d_inputVals, int startIdx, int endIdx, unsigned int* d_histo, int bit) {
+  if (bit < 32) {
+    int numBlocks = endIdx - startIdx;
+    int numThreads = 1;
+
+    cudaMemset(&d_histo, 0, 2*sizeof(unsigned int));
+    histo<<<numBlocks, numThreads>>>(d_inputVals, d_histo, startIdx, endIdx, bit);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    int numZeroes;
+    checkCudaErrors(cudaMemcpy(&numZeroes, d_histo, sizeof(int), cudaMemcpyDeviceToHost));
+
+    
+  }
+  else {  // base case
+  }
+
+  return 0; //stub
+}
 
 void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_inputPos,
@@ -51,4 +81,13 @@ void your_sort(unsigned int* const d_inputVals,
 { 
   //TODO
   //PUT YOUR SORT HERE
+  const size_t size = numElems * sizeof(unsigned int);
+  const int numBits = 32;
+
+  unsigned int* d_histo;
+  checkCudaErrors(cudaMalloc(&d_histo, 2 * sizeof(unsigned int)));
+
+  for (int bit = 0; bit < numBits; bit++) {
+    sortHelper(d_inputVals, 0, numElems, d_histo, 0);
+  }
 }
