@@ -1,0 +1,54 @@
+﻿Build started 11/2/2014 10:57:31 AM.
+     1>Project "C:\Users\zarend\cs344\Problem Sets\Problem Set 4\VSProj.vcxproj" on node 2 (Build target(s)).
+     1>AddCudaCompileDeps:
+         C:\Program Files (x86)\Microsoft Visual Studio 11.0\VC\bin\x86_amd64\cl.exe /E /nologo /showIncludes /TP /D__CUDACC__ /DWIN32 /D_DEBUG /D_CONSOLE /IC:\opencv\build\\include /I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include" /I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\bin" /I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include" /I. /FIcuda_runtime.h /c "C:\Users\zarend\cs344\Problem Sets\Problem Set 4\student_func.cu" 
+       CudaBuild:
+         Compiling CUDA source file student_func.cu...
+         cmd.exe /C "C:\Users\zarend\AppData\Local\Temp\tmpa8ed33b5ea104f41910a9b4615f9084f.cmd"
+         "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\bin\nvcc.exe" -gencode=arch=compute_20,code=\"sm_20,compute_20\" --use-local-env --cl-version 2012 -ccbin "C:\Program Files (x86)\Microsoft Visual Studio 11.0\VC\bin\x86_amd64"  -IC:\opencv\build\\include -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include"  -G   --keep-dir x64\Debug -maxrregcount=0  --machine 64 --compile -cudart static  -g   -DWIN32 -D_DEBUG -D_CONSOLE -Xcompiler "/EHsc /W3 /nologo /Od /Zi /RTC1 /MDd  " -o x64\Debug\student_func.cu.obj "C:\Users\zarend\cs344\Problem Sets\Problem Set 4\student_func.cu"
+         
+         C:\Users\zarend\cs344\Problem Sets\Problem Set 4>"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\bin\nvcc.exe" -gencode=arch=compute_20,code=\"sm_20,compute_20\" --use-local-env --cl-version 2012 -ccbin "C:\Program Files (x86)\Microsoft Visual Studio 11.0\VC\bin\x86_amd64"  -IC:\opencv\build\\include -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include" -I"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include"  -G   --keep-dir x64\Debug -maxrregcount=0  --machine 64 --compile -cudart static  -g   -DWIN32 -D_DEBUG -D_CONSOLE -Xcompiler "/EHsc /W3 /nologo /Od /Zi /RTC1 /MDd  " -o x64\Debug\student_func.cu.obj "C:\Users\zarend\cs344\Problem Sets\Problem Set 4\student_func.cu" 
+     1>C:/Users/zarend/cs344/Problem Sets/Problem Set 4/student_func.cu(92): warning : variable "size" was declared but never referenced
+     1>C:/Users/zarend/cs344/Problem Sets/Problem Set 4/student_func.cu(92): warning : variable "size" was declared but never referenced
+         student_func.cu
+     1>C:/Users/zarend/cs344/Problem Sets/Problem Set 4/student_func.cu(99): warning C4267: 'argument' : conversion from 'size_t' to 'int', possible loss of data
+     1>C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include\thrust/system/cuda/detail/cuda_launch_config.h(159): warning C4267: 'return' : conversion from 'size_t' to 'int', possible loss of data
+                 C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include\thrust/system/cuda/detail/cuda_launch_config.h(272) : see reference to function template instantiation 'L thrust::system::cuda::detail::cuda_launch_config_detail::util::round_i<L,size_t>(const L,const R)' being compiled
+                 with
+                 [
+                     L=int,
+                     R=size_t
+                 ]
+     1>C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include\thrust/system/cuda/detail/cuda_launch_config.h(317): warning C4267: 'argument' : conversion from 'size_t' to 'int', possible loss of data
+                 C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include\thrust/system/cuda/detail/cuda_launch_config.h(338) : see reference to function template instantiation 'size_t thrust::system::cuda::detail::block_size_with_maximum_potential_occupancy<thrust::system::cuda::detail::cuda_launch_config_detail::util::zero_function<T>>(const thrust::system::cuda::detail::function_attributes_t &,const thrust::system::cuda::detail::device_properties_t &,UnaryFunction)' being compiled
+                 with
+                 [
+                     T=unsigned __int64,
+                     UnaryFunction=thrust::system::cuda::detail::cuda_launch_config_detail::util::zero_function<unsigned __int64>
+                 ]
+     1>C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include\thrust/system/cuda/detail/cuda_launch_config.h(147): warning C4267: 'return' : conversion from 'size_t' to 'int', possible loss of data
+                 C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include\thrust/system/cuda/detail/cuda_launch_config.h(159) : see reference to function template instantiation 'L thrust::system::cuda::detail::cuda_launch_config_detail::util::divide_ri<L,R>(const L,const R)' being compiled
+                 with
+                 [
+                     L=int,
+                     R=size_t
+                 ]
+                 C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\include\thrust/system/cuda/detail/cuda_launch_config.h(272) : see reference to function template instantiation 'L thrust::system::cuda::detail::cuda_launch_config_detail::util::round_i<L,size_t>(const L,const R)' being compiled
+                 with
+                 [
+                     L=int,
+                     R=size_t
+                 ]
+       Link:
+         C:\Program Files (x86)\Microsoft Visual Studio 11.0\VC\bin\x86_amd64\link.exe /ERRORREPORT:PROMPT /OUT:"C:\Users\zarend\cs344\Problem Sets\Problem Set 4\x64\Debug\VSProj.exe" /INCREMENTAL /NOLOGO /LIBPATH:C:\opencv\build\\x64\vc11\lib /LIBPATH:"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\lib\x64" /LIBPATH:"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v6.5\lib\x64" opencv_calib3d249d.lib opencv_contrib249d.lib opencv_core249d.lib opencv_features2d249d.lib opencv_flann249d.lib opencv_gpu249d.lib cudart.lib opencv_highgui249d.lib opencv_imgproc249d.lib opencv_legacy249d.lib opencv_ml249d.lib opencv_nonfree249d.lib opencv_objdetect249d.lib opencv_ocl249d.lib opencv_photo249d.lib opencv_stitching249d.lib opencv_superres249d.lib opencv_ts249d.lib opencv_video249d.lib opencv_videostab249d.lib kernel32.lib user32.lib gdi32.lib winspool.lib comdlg32.lib advapi32.lib shell32.lib ole32.lib oleaut32.lib uuid.lib odbc32.lib odbccp32.lib /MANIFEST /MANIFESTUAC:"level='asInvoker' uiAccess='false'" /manifest:embed /DEBUG /PDB:"C:\Users\zarend\cs344\Problem Sets\Problem Set 4\x64\Debug\VSProj.pdb" /SUBSYSTEM:CONSOLE /TLBID:1 /DYNAMICBASE /NXCOMPAT /IMPLIB:"C:\Users\zarend\cs344\Problem Sets\Problem Set 4\x64\Debug\VSProj.lib" /MACHINE:X64 x64\Debug\HW4.cu.obj
+         x64\Debug\student_func.cu.obj
+         x64\Debug\compare.obj
+         x64\Debug\loadSaveImage.obj
+         x64\Debug\main.obj
+         x64\Debug\reference_calc.obj
+         VSProj.vcxproj -> C:\Users\zarend\cs344\Problem Sets\Problem Set 4\x64\Debug\VSProj.exe
+     1>Done Building Project "C:\Users\zarend\cs344\Problem Sets\Problem Set 4\VSProj.vcxproj" (Build target(s)).
+
+Build succeeded.
+
+Time Elapsed 00:00:06.56
