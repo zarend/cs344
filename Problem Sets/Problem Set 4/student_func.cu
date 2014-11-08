@@ -1,8 +1,8 @@
 //Udacity HW 4
 //Radix Sorting
 
+#include "reference_calc.cpp"
 #include "utils.h"
-#include <thrust/host_vector.h>
 
 /* Red Eye Removal
    ===============
@@ -42,35 +42,34 @@
 
  */
 
-__global__
-void histo(unsigned int* d_inputVals, unsigned int* d_histo, int startIdx, int endIdx, int bit) {
-  int myId = threadIdx.x + blockDim.x * blockIdx.x;
-  int idx = myId + startIdx;
+#define BITS_PER_BYTE 8
+#define MAX_THREADS 1024
 
-  if (idx < endIdx) {
-    int bin = (d_inputVals[idx] & (1 << bit)) != 0;
-    atomicAdd(d_histo + bin, 1);
-  }
+__global__
+void histo(unsigned int * d_vals_src, unsigned int * d_histo, int bit, unsigned int mask, size_t numElems) {
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx < numElems) {
+        int bin = (d_vals_src[idx] & mask) >> bit;
+        atomicAdd(d_histo + bin, 1);
+    }
 }
 
-int sortHelper(unsigned int* d_inputVals, int startIdx, int endIdx, unsigned int* d_histo, int bit) {
-  if (bit < 32) {
-    int numBlocks = endIdx - startIdx;
-    int numThreads = 1;
+__global__
+void exclusiveSum(unsigned int * histo, int numBins) {
+    unsigned int idx = threadIdx.x;
 
-    cudaMemset(&d_histo, 0, 2*sizeof(unsigned int));
-    histo<<<numBlocks, numThreads>>>(d_inputVals, d_histo, startIdx, endIdx, bit);
-    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    if (idx < numBins) {
+        unsigned int temp = idx ? histo[idx - 1] : 0; //convert from inclusive to exclusive scan
+        __syncthreads();
+        histo[idx] = temp;
+        __syncthreads();
 
-    int numZeroes;
-    checkCudaErrors(cudaMemcpy(&numZeroes, d_histo, sizeof(int), cudaMemcpyDeviceToHost));
-
-    
-  }
-  else {  // base case
-  }
-
-  return 0; //stub
+        for (int offset = 1; offset < numBins && idx >= offset; offset *= 2) {
+            histo[idx] += histo[idx - offset];
+            __syncthreads();
+        }
+    }
 }
 
 void your_sort(unsigned int* const d_inputVals,
@@ -78,16 +77,64 @@ void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_outputVals,
                unsigned int* const d_outputPos,
                const size_t numElems)
-{ 
-  //TODO
-  //PUT YOUR SORT HERE
-  const size_t size = numElems * sizeof(unsigned int);
-  const int numBits = 32;
+{
+    const int numBits = 1;
+    const int numBins = 1 << numBits;
 
-  unsigned int* d_histo;
-  checkCudaErrors(cudaMalloc(&d_histo, 2 * sizeof(unsigned int)));
+    unsigned int * d_histo;
+    checkCudaErrors(cudaMalloc(&d_histo, numBins * sizeof(unsigned int)));
 
-  for (int bit = 0; bit < numBits; bit++) {
-    sortHelper(d_inputVals, 0, numElems, d_histo, 0);
-  }
+    unsigned int * d_vals_src = d_inputVals;
+    unsigned int * d_pos_src = d_inputPos;
+
+    unsigned int * d_vals_dst = d_outputVals;
+    unsigned int * d_pos_dst = d_outputPos;
+
+    for (unsigned int bit = 0; bit < BITS_PER_BYTE * sizeof(unsigned int); bit += numBits) {
+        unsigned int mask = (numBins - 1) << bit;
+
+        checkCudaErrors(cudaMemset(d_histo, 0, numBins * sizeof(unsigned int)));
+
+        int threadsPerBlock = MAX_THREADS;  // generate histogram
+        int numBlocks = numElems / threadsPerBlock + 1;
+
+        histo<<<numBlocks, threadsPerBlock>>>(d_vals_src, d_histo, bit, mask, numElems);
+        cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+        exclusiveSum<<<1, numBins>>>(d_histo, numBins); // take exclusive scan of histogram
+        cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+        // scatter
+        size_t size = numElems * sizeof(unsigned int);
+        unsigned int * h_vals_src = (unsigned int *)malloc(size);
+        unsigned int * h_pos_src = (unsigned int *)malloc(size);
+        unsigned int * h_vals_dst = (unsigned int *)malloc(size);
+        unsigned int * h_pos_dst = (unsigned int *)malloc(size);
+        unsigned int * h_histo = (unsigned int *)malloc(numBins * sizeof(unsigned int));
+
+        checkCudaErrors(cudaMemcpy(h_vals_src, d_vals_src, size, cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(h_pos_src, d_pos_src, size, cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(h_vals_dst, d_vals_dst, size, cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(h_pos_dst, d_pos_dst, size, cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(h_histo, d_histo, numBins * sizeof(unsigned int), cudaMemcpyDeviceToHost));
+
+        for (unsigned int j = 0; j < numElems; ++j) {
+          unsigned int bin = (h_vals_src[j] & mask) >> bit;
+          h_vals_dst[h_histo[bin]] = h_vals_src[j];
+          h_pos_dst[h_histo[bin]]  = h_pos_src[j];
+          h_histo[bin]++;
+        }
+
+        checkCudaErrors(cudaMemcpy(d_vals_src, h_vals_src, size, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpy(d_pos_src, h_pos_src, size, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpy(d_vals_dst, h_vals_dst, size, cudaMemcpyHostToDevice));
+        checkCudaErrors(cudaMemcpy(d_pos_dst, h_pos_dst, size, cudaMemcpyHostToDevice));
+
+        // cleanup
+        std::swap(d_vals_src, d_vals_dst);
+        std::swap(d_pos_src, d_pos_dst);
+    }
+
+    checkCudaErrors(cudaMemcpy(d_outputVals, d_inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
+    checkCudaErrors(cudaMemcpy(d_outputPos, d_inputPos, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
 }
