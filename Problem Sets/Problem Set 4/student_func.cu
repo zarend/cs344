@@ -5,6 +5,8 @@
 #include "utils.h"
 
 #include <thrust/scan.h>
+#include <stdio.h>
+#include <assert.h>
 
 /* Red Eye Removal
    ===============
@@ -50,12 +52,24 @@
 #define uint unsigned int
 
 __global__
-void histo(unsigned int * d_vals_src, unsigned int * d_histo, int bit, unsigned int mask, size_t numElems) {
+void histo(unsigned int * d_vals_src, unsigned int * d_histo, int bit, unsigned int mask, size_t numElems, int numBins) {
+    extern __shared__ uint sharedHisto[];
+
     unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < numElems) {
+        if (threadIdx.x < numBins) {
+            sharedHisto[threadIdx.x] = 0;
+        }
+        __syncthreads();
+
         int bin = (d_vals_src[idx] & mask) >> bit;
-        atomicAdd(d_histo + bin, 1);
+        atomicAdd(sharedHisto + bin, 1);
+        __syncthreads();
+
+        if (threadIdx.x < numBins) {
+            atomicAdd(d_histo + threadIdx.x, sharedHisto[threadIdx.x]);
+        }
     }
 }
 
@@ -109,95 +123,105 @@ void initIndicies(unsigned int * d_outIdx, size_t numElems, unsigned int mask, u
 }
 
 __global__
-void addInBins(unsigned int * d_outIdx, unsigned int * d_vals_src,unsigned int * d_histo, unsigned int bit, unsigned int mask, size_t numElems, int numBins) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+void convertToExclusive(uint * in, uint * out, size_t length) {
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (idx < numElems) {
-        int bin = (d_vals_src[idx] & mask) >> bit;
-        d_outIdx[idx] += d_histo[bin];
-    }
+    if (idx < length)
+        out[idx] = idx ? in[idx - 1] : 0;
 }
 
 __global__
-void finishScatter(unsigned int * d_vals_dst, unsigned int * d_vals_src, unsigned int * d_pos_dst, unsigned int * d_pos_src, unsigned int * d_outIdx, size_t numElems) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (idx < numElems) {
-        d_vals_dst[d_outIdx[idx]] = d_vals_src[idx];
-        d_pos_dst[d_outIdx[idx]] = d_pos_src[idx];
-    }
-}
-
-__global__
-void inclusiveSumPass1(uint * d_arr, uint * d_out, size_t length) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+void inclusiveScanPass1(uint * arr, uint * blockSum, size_t length) {
+    uint idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < length) {
-        for (int offset = 1; offset < blockDim.x && idx >= offset; offset *= 2) {
-            d_arr[idx] += d_arr[idx - offset];
+        for (uint offset = 1; offset < blockDim.x && threadIdx.x >= offset; offset *= 2) {
+            uint temp = arr[idx - offset];
+            __syncthreads();
+            arr[idx] += temp;
             __syncthreads();
         }
 
-        if (threadIdx.x == blockDim.x - 1) {    // last tread in block writes
-            d_out[blockIdx.x] = d_arr[idx];     // its result to d_out
+        __syncthreads();
+
+        if (threadIdx.x == blockDim.x - 1) {
+            blockSum[blockIdx.x] = arr[idx];
+        }
+    }
+}
+
+void checkPt1(uint * d_arr, size_t length) {
+    uint * h_arr = (uint *)malloc(sizeof(uint) * length);
+    checkCudaErrors(cudaMemcpy(h_arr, d_arr, sizeof(uint) * length, cudaMemcpyDeviceToHost));
+
+    for (int i = 1; i < length; i++) {
+        if (i % 1024) {
+            if (h_arr[i] < h_arr[i - 1]) {
+                printf("i: %d, h_arr[i]: %u, h_arr[i-1]: %u\n", i, h_arr[i], h_arr[i - 1]);
+            }
+            assert(h_arr[i] >= h_arr[i - 1]);
         }
     }
 }
 
 __global__
-void inclusiveSumPass2(uint * d_arr, uint * d_out, size_t length) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+void inclusiveScanPass2(uint * arr, uint * blockSum, size_t length) {
+    uint idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < length) {
-        d_arr[idx] += d_out[blockIdx.x];
+        arr[idx] += blockSum[blockIdx.x];
     }
 }
 
-__global__
-void convertToExclusive(uint * d_in, uint* d_out, size_t length) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+void exclusiveSumDwarf(uint * d_arr, size_t length) {   // takes the exclusive prefix sum of d_arr
+    const int threads = MAX_THREADS;
+    const int blocks = length / threads + 1;
 
-    if (idx < length) {
-        if (idx) {
-            d_out[idx] = d_in[idx - 1];
-        }
-        else {
-            d_out[idx] = 0;
+    uint * d_temp;  // shift everything over by one and set 0th element to 0
+    checkCudaErrors(cudaMalloc(&d_temp, length * sizeof(uint)));
+    checkCudaErrors(cudaMemcpy(d_temp, d_arr, length * sizeof(uint), cudaMemcpyDeviceToDevice));
+    convertToExclusive<<<blocks, threads>>>(d_temp, d_arr, length);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    checkCudaErrors(cudaFree(d_temp));
+    // ^^^ good up to here
+
+    uint * h_thrustArr = (uint *)malloc(length * sizeof(uint));
+    uint * h_arr = (uint *)malloc(length * sizeof(uint));
+    checkCudaErrors(cudaMemcpy(h_thrustArr, d_arr, length * sizeof(uint), cudaMemcpyDeviceToHost));
+
+    //take inclusive sum of each block and write out each blocks sum
+    uint * d_blockSum;
+    checkCudaErrors(cudaMalloc(&d_blockSum, blocks * sizeof(uint)));
+    inclusiveScanPass1<<<blocks, threads>>>(d_arr, d_blockSum, length);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    checkPt1(d_arr, length);
+
+    // take exclusive sum of the sums for each block
+    exclusiveSum<<<1, blocks>>>(d_blockSum, blocks);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    // add in those sums for each block
+    inclusiveScanPass2<<<blocks, threads>>>(d_arr, d_blockSum, length);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    // take thrust inclusive sum
+    thrust::inclusive_scan(h_thrustArr, h_thrustArr + length, h_thrustArr);
+    checkCudaErrors(cudaMemcpy(h_arr, d_arr, length * sizeof(uint), cudaMemcpyDeviceToHost));
+
+    int diff = 0;
+    int numPrints = 0;
+    for (int i = 0; i < length; i++) {
+        if (h_arr[i] != h_thrustArr[i]) {
+            diff = 1;
+            numPrints++;
+            printf("h_arr[%d]: %u, h_thrustArr[%d]: %u\n", i, h_arr[i], i, h_thrustArr[i]);
+            if (numPrints > 100) {
+                exit(0);
+            }
         }
     }
-}
 
-void exclusiveSumElf(unsigned int * d_arr, size_t length) {
-    unsigned int threads = MAX_THREADS;
-    unsigned int blocks = length / threads + 1;
-
-    uint * d_out;
-    checkCudaErrors(cudaMalloc(&d_out, length * sizeof(uint)));
-
-    inclusiveSumPass1<<<blocks, threads>>>(d_arr, d_out, length);
-    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-
-    exclusiveSum<<<1, blocks>>>(d_out, blocks);
-    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-
-    inclusiveSumPass2<<<blocks, threads>>>(d_arr, d_out, length);
-    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-
-    uint * temp;
-    checkCudaErrors(cudaMalloc(&temp, length * sizeof(uint)));
-    checkCudaErrors(cudaMemcpy(temp, d_arr, length * sizeof(uint), cudaMemcpyDeviceToDevice));
-
-    convertToExclusive<<<blocks, threads>>>(temp, d_arr, length);
-    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-
-    /*plan:
-    take inclusive sum scan for each block
-    then write out last element of each block to out array
-    take inclusive sum scan on out array
-    map out array to each block in original array
-    convert inclusive sum to exclusive by moving everything over one and settings
-        element 0 to 0
-    */
 }
 
 void your_sort(unsigned int* const d_inputVals,
@@ -206,7 +230,7 @@ void your_sort(unsigned int* const d_inputVals,
                unsigned int* const d_outputPos,
                const size_t numElems)
 {
-    const int numBits = 1;
+    const int numBits = 4;
     const int numBins = 1 << numBits;
 
     unsigned int * d_histo;
@@ -228,25 +252,33 @@ void your_sort(unsigned int* const d_inputVals,
 
         checkCudaErrors(cudaMemset(d_histo, 0, numBins * sizeof(unsigned int)));
 
+
         const int threadsPerBlock = MAX_THREADS;  // generate histogram
         const int numBlocks = numElems / threadsPerBlock + 1;
 
-        histo<<<numBlocks, threadsPerBlock>>>(d_vals_src, d_histo, bit, mask, numElems);
-        cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+        // 72ms
+        #if 1
+            size_t sharedSize = numBins * sizeof(uint);
 
+            histo<<<numBlocks*4, threadsPerBlock/4, sharedSize>>>(d_vals_src, d_histo, bit, mask, numElems, numBins);
+            cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+        #endif
+
+        // 17 ms
         exclusiveSum<<<1, numBins>>>(d_histo, numBins); // take exclusive prefix sum of histogram
         cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
-        // scatter
+        // scatter (59ms)
         for (int binIdx = 0; binIdx < numBins; binIdx++) {  // for each bin
             // setup indices for exclusive sum scan
             initIndicies<<<numBlocks, threadsPerBlock>>>(d_outIdx, numElems, mask, bit, d_vals_src, binIdx);
             cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
+            exclusiveSumDwarf(d_outIdx, numElems);
             //exclusiveSumElf(d_outIdx, numElems);
-            checkCudaErrors(cudaMemcpy(h_outIdx, d_outIdx, numElems * sizeof(uint), cudaMemcpyDeviceToHost));
-            thrust::exclusive_scan(h_outIdx, h_outIdx + numElems, h_outIdx);
-            checkCudaErrors(cudaMemcpy(d_outIdx, h_outIdx, numElems * sizeof(uint), cudaMemcpyHostToDevice));
+            //checkCudaErrors(cudaMemcpy(h_outIdx, d_outIdx, numElems * sizeof(uint), cudaMemcpyDeviceToHost));
+            //thrust::exclusive_scan(h_outIdx, h_outIdx + numElems, h_outIdx);
+            //checkCudaErrors(cudaMemcpy(d_outIdx, h_outIdx, numElems * sizeof(uint), cudaMemcpyHostToDevice));
 
             addStuff<<<numBlocks, threadsPerBlock>>>(d_outIdx, d_histo, binIdx, numElems);
             cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
