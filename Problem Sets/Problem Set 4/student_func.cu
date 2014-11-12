@@ -7,6 +7,7 @@
 #include <thrust/scan.h>
 #include <stdio.h>
 #include <assert.h>
+#include "timer.h"
 
 /* Red Eye Removal
    ===============
@@ -50,6 +51,23 @@
 #define MAX_THREADS 1024
 
 #define uint unsigned int
+
+#define PROFILE 0
+
+#if PROFILE
+  #define STARTCLOCK(name) GpuTimer name; name.Start();
+  #define ENDCLOCK(name) name.Stop(); printf("%s: %f\n", #name, name.Elapsed());
+#else
+  #define STARTCLOCK(name) 
+  #define ENDCLOCK(name) 
+#endif
+
+void endClock(clock_t start, char message[]) {
+  clock_t end = clock();
+  double elapsed_secs = end-start / (double)CLOCKS_PER_SEC;
+  printf("start: %d, end: %d\n", start, end);
+  printf("[mytimer] %s: %.3lf msec\n", message, elapsed_secs * 1000.0);
+}
 
 __global__
 void histo(unsigned int * d_vals_src, unsigned int * d_histo, int bit, unsigned int mask, size_t numElems, int numBins) {
@@ -123,11 +141,29 @@ void initIndicies(unsigned int * d_outIdx, size_t numElems, unsigned int mask, u
 }
 
 __global__
-void convertToExclusive(uint * in, uint * out, size_t length) {
+void convertToExclusive(uint * arr, uint * blockEnds, size_t length) {    // move everything over one and set 0th element to additive identity
     unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (idx < length)
-        out[idx] = idx ? in[idx - 1] : 0;
+    if (idx < length) {
+        if (threadIdx.x) {
+            uint temp = idx ? arr[idx - 1] : 0;
+            if (threadIdx.x == blockDim.x - 1) {
+                blockEnds[blockIdx.x] = arr[idx];
+            }
+
+            
+            __syncthreads();
+            arr[idx] = temp;
+        }
+    }
+}
+
+__global__
+void convertToExclusivePass2(uint * arr, uint * blockEnds, size_t length, int threads) {    // move everything over one and set 0th element to additive identity
+    uint idx = threadIdx.x * threads;
+    if (idx && idx < length) {
+        arr[idx] = blockEnds[threadIdx.x - 1];
+    }
 }
 
 __global__
@@ -177,36 +213,46 @@ void exclusiveSumDwarf(uint * d_arr, size_t length) {   // takes the exclusive p
     const int threads = MAX_THREADS;
     const int blocks = length / threads + 1;
 
-    uint * d_temp;  // shift everything over by one and set 0th element to 0
+    STARTCLOCK(______convertToExclusive);
+    uint * d_blockEnds;
+    checkCudaErrors(cudaMalloc(&d_blockEnds, blocks * sizeof(uint)));
+    convertToExclusive<<<blocks, threads>>>(d_arr, d_blockEnds, length);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    convertToExclusivePass2<<<1, blocks>>>(d_arr, d_blockEnds, length, threads);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+    /*uint * d_temp;  // shift everything over by one and set 0th element to 0
     checkCudaErrors(cudaMalloc(&d_temp, length * sizeof(uint)));
     checkCudaErrors(cudaMemcpy(d_temp, d_arr, length * sizeof(uint), cudaMemcpyDeviceToDevice));
     convertToExclusive<<<blocks, threads>>>(d_temp, d_arr, length);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-    checkCudaErrors(cudaFree(d_temp));
-    // ^^^ good up to here
+    checkCudaErrors(cudaFree(d_temp));*/
+    ENDCLOCK(______convertToExclusive);
 
-    uint * h_thrustArr = (uint *)malloc(length * sizeof(uint));
+    /*uint * h_thrustArr = (uint *)malloc(length * sizeof(uint));
     uint * h_arr = (uint *)malloc(length * sizeof(uint));
-    checkCudaErrors(cudaMemcpy(h_thrustArr, d_arr, length * sizeof(uint), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(h_thrustArr, d_arr, length * sizeof(uint), cudaMemcpyDeviceToHost));*/
 
-    //take inclusive sum of each block and write out each blocks sum
+    STARTCLOCK(______inclusivScanPass1); //take inclusive sum of each block and write out each blocks sum
     uint * d_blockSum;
     checkCudaErrors(cudaMalloc(&d_blockSum, blocks * sizeof(uint)));
     inclusiveScanPass1<<<blocks, threads>>>(d_arr, d_blockSum, length);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    ENDCLOCK(______inclusivScanPass1);
 
-    checkPt1(d_arr, length);
-
-    // take exclusive sum of the sums for each block
+    STARTCLOCK(______exclusiveSum); // take exclusive sum of the sums for each block
     exclusiveSum<<<1, blocks>>>(d_blockSum, blocks);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    ENDCLOCK(______exclusiveSum);
 
-    // add in those sums for each block
+    STARTCLOCK(______pass2); // add in those sums for each block
     inclusiveScanPass2<<<blocks, threads>>>(d_arr, d_blockSum, length);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    ENDCLOCK(______pass2);
 
     // take thrust inclusive sum
-    thrust::inclusive_scan(h_thrustArr, h_thrustArr + length, h_thrustArr);
+    /*thrust::inclusive_scan(h_thrustArr, h_thrustArr + length, h_thrustArr);
     checkCudaErrors(cudaMemcpy(h_arr, d_arr, length * sizeof(uint), cudaMemcpyDeviceToHost));
 
     int diff = 0;
@@ -220,7 +266,7 @@ void exclusiveSumDwarf(uint * d_arr, size_t length) {   // takes the exclusive p
                 exit(0);
             }
         }
-    }
+    }*/
 
 }
 
@@ -248,6 +294,7 @@ void your_sort(unsigned int* const d_inputVals,
     uint * h_outIdx = (uint *)malloc(numElems * sizeof(uint));
 
     for (unsigned int bit = 0; bit < BITS_PER_BYTE * sizeof(unsigned int); bit += numBits) {
+        STARTCLOCK(singlePass);
         unsigned int mask = (numBins - 1) << bit;
 
         checkCudaErrors(cudaMemset(d_histo, 0, numBins * sizeof(unsigned int)));
@@ -257,66 +304,56 @@ void your_sort(unsigned int* const d_inputVals,
         const int numBlocks = numElems / threadsPerBlock + 1;
 
         // 72ms
+        STARTCLOCK(__histoClock);
         #if 1
             size_t sharedSize = numBins * sizeof(uint);
 
             histo<<<numBlocks*4, threadsPerBlock/4, sharedSize>>>(d_vals_src, d_histo, bit, mask, numElems, numBins);
             cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
         #endif
+        ENDCLOCK(__histoClock);
 
+        STARTCLOCK(__exclusiveSumClock);
         // 17 ms
         exclusiveSum<<<1, numBins>>>(d_histo, numBins); // take exclusive prefix sum of histogram
         cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+        ENDCLOCK(__exclusiveSumClock);
 
-        // scatter (59ms)
+        STARTCLOCK(__scatterClock);
         for (int binIdx = 0; binIdx < numBins; binIdx++) {  // for each bin
-            // setup indices for exclusive sum scan
+            STARTCLOCK(____initIndiciesKernel); // setup indices for exclusive sum scan
             initIndicies<<<numBlocks, threadsPerBlock>>>(d_outIdx, numElems, mask, bit, d_vals_src, binIdx);
             cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+            ENDCLOCK(____initIndiciesKernel);
 
+            STARTCLOCK(____exclusiveSumDwarf);
             exclusiveSumDwarf(d_outIdx, numElems);
+            ENDCLOCK(____exclusiveSumDwarf);
             //exclusiveSumElf(d_outIdx, numElems);
             //checkCudaErrors(cudaMemcpy(h_outIdx, d_outIdx, numElems * sizeof(uint), cudaMemcpyDeviceToHost));
             //thrust::exclusive_scan(h_outIdx, h_outIdx + numElems, h_outIdx);
             //checkCudaErrors(cudaMemcpy(d_outIdx, h_outIdx, numElems * sizeof(uint), cudaMemcpyHostToDevice));
 
+            STARTCLOCK(____addStuffKernel);
             addStuff<<<numBlocks, threadsPerBlock>>>(d_outIdx, d_histo, binIdx, numElems);
             cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+            ENDCLOCK(____addStuffKernel);
 
+            STARTCLOCK(____scatterKernel);
             scatter<<<numBlocks, threadsPerBlock>>>(d_vals_src, d_vals_dst, d_pos_src, d_pos_dst, d_outIdx, mask, bit, d_histo, binIdx, numElems);
             cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+            ENDCLOCK(____scatterKernel);
         }
-
-        #if 0   // serial scatter implementation
-            size_t size = numElems * sizeof(unsigned int);
-            unsigned int * h_vals_src = (unsigned int *)malloc(size);
-            unsigned int * h_pos_src = (unsigned int *)malloc(size);
-            unsigned int * h_vals_dst = (unsigned int *)malloc(size);
-            unsigned int * h_pos_dst = (unsigned int *)malloc(size);
-            unsigned int * h_histo = (unsigned int *)malloc(numBins * sizeof(unsigned int));
-
-            checkCudaErrors(cudaMemcpy(h_vals_src, d_vals_src, size, cudaMemcpyDeviceToHost));
-            checkCudaErrors(cudaMemcpy(h_pos_src, d_pos_src, size, cudaMemcpyDeviceToHost));
-            checkCudaErrors(cudaMemcpy(h_vals_dst, d_vals_dst, size, cudaMemcpyDeviceToHost));
-            checkCudaErrors(cudaMemcpy(h_pos_dst, d_pos_dst, size, cudaMemcpyDeviceToHost));
-            checkCudaErrors(cudaMemcpy(h_histo, d_histo, numBins * sizeof(unsigned int), cudaMemcpyDeviceToHost));
-
-            for (unsigned int j = 0; j < numElems; ++j) {
-              unsigned int bin = (h_vals_src[j] & mask) >> bit;
-              h_vals_dst[h_histo[bin]] = h_vals_src[j];
-              h_pos_dst[h_histo[bin]]  = h_pos_src[j];
-              h_histo[bin]++;
-            }
-
-            checkCudaErrors(cudaMemcpy(d_vals_src, h_vals_src, size, cudaMemcpyHostToDevice));
-            checkCudaErrors(cudaMemcpy(d_pos_src, h_pos_src, size, cudaMemcpyHostToDevice));
-            checkCudaErrors(cudaMemcpy(d_vals_dst, h_vals_dst, size, cudaMemcpyHostToDevice));
-            checkCudaErrors(cudaMemcpy(d_pos_dst, h_pos_dst, size, cudaMemcpyHostToDevice));
-        #endif
+        ENDCLOCK(__scatterClock);
 
         // cleanup
         std::swap(d_vals_src, d_vals_dst);
         std::swap(d_pos_src, d_pos_dst);
+        ENDCLOCK(singlePass);
+
+        #if PROFILE
+            printf("\n");
+        #endif
     }
 
     checkCudaErrors(cudaMemcpy(d_outputVals, d_inputVals, numElems * sizeof(unsigned int), cudaMemcpyDeviceToDevice));
