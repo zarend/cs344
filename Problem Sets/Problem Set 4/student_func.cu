@@ -52,7 +52,7 @@
 
 #define uint unsigned int
 
-#define PROFILE 0
+#define PROFILE 1
 
 #if PROFILE
   #define STARTCLOCK(name) GpuTimer name; name.Start();
@@ -150,7 +150,6 @@ void convertToExclusive(uint * arr, uint * blockEnds, size_t length) {    // mov
             if (threadIdx.x == blockDim.x - 1) {
                 blockEnds[blockIdx.x] = arr[idx];
             }
-
             
             __syncthreads();
             arr[idx] = temp;
@@ -168,21 +167,28 @@ void convertToExclusivePass2(uint * arr, uint * blockEnds, size_t length, int th
 
 __global__
 void inclusiveScanPass1(uint * arr, uint * blockSum, size_t length) {
+    extern __shared__ uint sharred[];
+
     uint idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < length) {
+        sharred[threadIdx.x] = arr[idx];
+        __syncthreads();
+
         for (uint offset = 1; offset < blockDim.x && threadIdx.x >= offset; offset *= 2) {
-            uint temp = arr[idx - offset];
+            uint temp = sharred[threadIdx.x - offset];
             __syncthreads();
-            arr[idx] += temp;
+            sharred[threadIdx.x] += temp;
             __syncthreads();
         }
 
         __syncthreads();
 
         if (threadIdx.x == blockDim.x - 1) {
-            blockSum[blockIdx.x] = arr[idx];
+            blockSum[blockIdx.x] = sharred[threadIdx.x];
         }
+
+        arr[idx] = sharred[threadIdx.x];
     }
 }
 
@@ -237,7 +243,8 @@ void exclusiveSumDwarf(uint * d_arr, size_t length) {   // takes the exclusive p
     STARTCLOCK(______inclusivScanPass1); //take inclusive sum of each block and write out each blocks sum
     uint * d_blockSum;
     checkCudaErrors(cudaMalloc(&d_blockSum, blocks * sizeof(uint)));
-    inclusiveScanPass1<<<blocks, threads>>>(d_arr, d_blockSum, length);
+    size_t sharredSize = threads * sizeof(uint);
+    inclusiveScanPass1<<<blocks, threads, sharredSize>>>(d_arr, d_blockSum, length);
     cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
     ENDCLOCK(______inclusivScanPass1);
 
@@ -303,7 +310,6 @@ void your_sort(unsigned int* const d_inputVals,
         const int threadsPerBlock = MAX_THREADS;  // generate histogram
         const int numBlocks = numElems / threadsPerBlock + 1;
 
-        // 72ms
         STARTCLOCK(__histoClock);
         #if 1
             size_t sharedSize = numBins * sizeof(uint);
@@ -314,7 +320,6 @@ void your_sort(unsigned int* const d_inputVals,
         ENDCLOCK(__histoClock);
 
         STARTCLOCK(__exclusiveSumClock);
-        // 17 ms
         exclusiveSum<<<1, numBins>>>(d_histo, numBins); // take exclusive prefix sum of histogram
         cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
         ENDCLOCK(__exclusiveSumClock);
