@@ -67,13 +67,25 @@
 #include "utils.h"
 #include <thrust/host_vector.h>
 #include "reference_calc.cpp"
+#include <stdio.h>
+#include "timer.h"
 
 #define uchar unsigned char
 
 #define MAX_THREADS 1024
 #define SQRT_MAX_THREADS 32
 
-    #define convert2Dto1D(x, y, numCols) (x) + (y) * (numCols)
+#define convert2Dto1D(x, y, numCols) (x) + (y) * (numCols)
+
+#define PROFILE 1
+
+#if PROFILE
+  #define STARTCLOCK(name) GpuTimer name; name.Start();
+  #define ENDCLOCK(name) name.Stop(); printf("%s: %f\n", #name, name.Elapsed());
+#else
+  #define STARTCLOCK(name) 
+  #define ENDCLOCK(name) 
+#endif
 
 __global__
 void mask(char* mask, uchar4* source, int numPixels) {
@@ -183,63 +195,59 @@ void jacobi(float* imgGuessPrev, float* imgGuessNext, char* interior, unsigned c
 
   int pIdx = col + row * numCols;
 
+  if (col < numCols && row < numRows && interior[pIdx]) {
+    float sum1 = 0;
+    float sum2 = 0;
 
-  if (col < numCols && row < numRows) {
-    if (interior[pIdx]) {
-      float sum1 = 0;
-      float sum2 = 0;
-      
-      int idx = (col - 1) + row * numCols;
-      if (interior[idx]) {
-        sum1 += imgGuessPrev[idx];
-      }
-      else {
-        sum1 += dstImg[idx];
-      }
-      sum2 += sourceImg[pIdx] - sourceImg[idx];
-
-      idx = (col + 1) + row * numCols;
-      if (interior[idx]) {
-        sum1 += imgGuessPrev[idx];
-      }
-      else {
-        sum1 += dstImg[idx];
-      }
-      sum2 += sourceImg[pIdx] - sourceImg[idx];
-
-      idx = col + (row - 1) * numCols;
-      if (interior[idx]) {
-        sum1 += imgGuessPrev[idx];
-      }
-      else {
-        sum1 += dstImg[idx];
-      }
-      sum2 += sourceImg[pIdx] - sourceImg[idx];
-
-      idx = col + (row + 1) * numCols;
-      if (interior[idx]) {
-        sum1 += imgGuessPrev[idx];
-      }
-      else {
-        sum1 += dstImg[idx];
-      }
-      sum2 += sourceImg[pIdx] - sourceImg[idx];
-
-      float newVal = (sum1 + sum2) / 4.0f;
-
-      if (newVal > 255.0f) {
-        newVal = 255.0f;
-      }
-
-      if (newVal < 0.0f) {
-        newVal = 0.0f;
-      }
-
-      imgGuessNext[pIdx] = newVal;
+    uchar pImg = sourceImg[pIdx];
+    
+    int idx = (col - 1) + row * numCols;
+    if (interior[idx]) {
+      sum1 += imgGuessPrev[idx];
     }
     else {
-      imgGuessNext[pIdx] = imgGuessPrev[pIdx];
+      sum1 += dstImg[idx];
     }
+    sum2 += pImg - sourceImg[idx];
+
+    idx = (col + 1) + row * numCols;
+    if (interior[idx]) {
+      sum1 += imgGuessPrev[idx];
+    }
+    else {
+      sum1 += dstImg[idx];
+    }
+    sum2 += pImg - sourceImg[idx];
+
+    idx = col + (row - 1) * numCols;
+    if (interior[idx]) {
+      sum1 += imgGuessPrev[idx];
+    }
+    else {
+      sum1 += dstImg[idx];
+    }
+    sum2 += pImg - sourceImg[idx];
+
+    idx = col + (row + 1) * numCols;
+    if (interior[idx]) {
+      sum1 += imgGuessPrev[idx];
+    }
+    else {
+      sum1 += dstImg[idx];
+    }
+    sum2 += pImg - sourceImg[idx];
+
+    float newVal = (sum1 + sum2) / 4.0f;
+
+    if (newVal > 255.0f) {
+      newVal = 255.0f;
+    }
+
+    if (newVal < 0.0f) {
+      newVal = 0.0f;
+    }
+
+    imgGuessNext[pIdx] = newVal;
   }
 }
 
@@ -260,6 +268,7 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
                 uchar4* const h_blendedImg) //OUT
 {
   // step zero - book keeping
+  STARTCLOCK(step_zero);
 
   const int numPixels = numRowsSource * numColsSource;
   const size_t imageSize = numPixels * sizeof(uchar4);
@@ -276,7 +285,11 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
   checkCudaErrors(cudaMemcpy(d_destImg, h_destImg, imageSize, cudaMemcpyHostToDevice));
   checkCudaErrors(cudaMemcpy(d_blendedImg, h_destImg, imageSize, cudaMemcpyHostToDevice));
 
+  ENDCLOCK(step_zero);
+
   // step one - compute mask for source image
+  STARTCLOCK(step_one);
+
   char* d_sourceMask;   // alocate mask on device
   checkCudaErrors(cudaMalloc(&d_sourceMask, sizeof(char) * numPixels));
 
@@ -289,7 +302,11 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
   //checkCudaErrors(cudaMemcpy(d_blendedImg, d_destImg, imageSize, cudaMemcpyDeviceToDevice));  // test passed
   //checkMask<<<blocks, threads>>>(d_destImg, d_sourceMask, d_blendedImg, numPixels);           // mask computed correctly
 
+  ENDCLOCK(step_one);
+
   // step two - compute interior and border regions
+  STARTCLOCK(step_two);
+
   char* d_border;   // alocated arrays for border and interior
   char* d_interior;
 
@@ -304,7 +321,10 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
 
   //checkMask<<<blocks, threads>>>(d_destImg, d_interior, d_blendedImg, numPixels); // after eyeballing it looked correct
 
+  ENDCLOCK(step_two);
+
   // step three - separate channels
+  STARTCLOCK(step_three);
 
   unsigned char* d_sourceImg_r;
   unsigned char* d_sourceImg_g;
@@ -328,7 +348,10 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
   separateChannels<<<blocks, threads>>>(d_destImg, d_dstImg_r, d_dstImg_g, d_dstImg_b, numPixels);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
+  ENDCLOCK(step_three);
+
   // step four - initialize float buffers
+  STARTCLOCK(step_four);
 
   size_t bufferSize = sizeof(float) * numPixels;
 
@@ -353,11 +376,22 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
   initBuffer<<<blocks, threads>>>(d_imageGuessPrev_b, d_sourceImg_b, numPixels);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
+  ENDCLOCK(step_four);
+
   // step 5 - perform Jacobi iteration 800 times
+  STARTCLOCK(step_five);
 
   const int numJacobiIterations = 800;
 
+  float sum = 0.0f;
+  int cnt = 0;
+  float min = 1000;
+  float max = 0.0f;
+
   for (int i = 0; i < numJacobiIterations; i++) {
+    GpuTimer jacobiTimer;
+    jacobiTimer.Start();
+
     jacobi<<<step2Blocks, step2Threads>>>(d_imageGuessPrev_r, d_imageGuessNext_r, d_interior, d_sourceImg_r, d_dstImg_r, numColsSource, numRowsSource);
     jacobi<<<step2Blocks, step2Threads>>>(d_imageGuessPrev_g, d_imageGuessNext_g, d_interior, d_sourceImg_g, d_dstImg_g, numColsSource, numRowsSource);
     jacobi<<<step2Blocks, step2Threads>>>(d_imageGuessPrev_b, d_imageGuessNext_b, d_interior, d_sourceImg_b, d_dstImg_b, numColsSource, numRowsSource);
@@ -366,24 +400,54 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
     std::swap(d_imageGuessPrev_r, d_imageGuessNext_r);
     std::swap(d_imageGuessPrev_g, d_imageGuessNext_g);
     std::swap(d_imageGuessPrev_b, d_imageGuessNext_b);
+
+    jacobiTimer.Stop();
+
+    float jacobiTime = jacobiTimer.Elapsed();
+    sum += jacobiTime;
+    cnt++;
+    min = std::min(min, jacobiTime);
+    max = std::max(max, jacobiTime);
   }
 
   std::swap(d_imageGuessPrev_r, d_imageGuessNext_r);    // results will be in image previous
   std::swap(d_imageGuessPrev_g, d_imageGuessNext_g);
   std::swap(d_imageGuessPrev_b, d_imageGuessNext_b);
 
+  ENDCLOCK(step_five);
+
+  printf("\tavg: %f, min: %f, max: %f\n", sum/cnt, min, max);
+
   // step 6 - create output image
+  STARTCLOCK(step_six);
+
   finalizeJacobi<<<blocks, threads>>>(d_imageGuessPrev_r, d_sourceImg_r, d_dstImg_r, d_interior, numPixels);
   finalizeJacobi<<<blocks, threads>>>(d_imageGuessPrev_g, d_sourceImg_g, d_dstImg_g, d_interior, numPixels);
   finalizeJacobi<<<blocks, threads>>>(d_imageGuessPrev_b, d_sourceImg_b, d_dstImg_b, d_interior, numPixels);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
+  ENDCLOCK(step_six);
+
+  /***
+  optimizations
+  reduce to subset of image that only includes stuff in the border and inter
+      find maxX, minX, maxY, minY
+      create new image with given boundaries
+      then do jacobi iterations
+  combine imgGuessPrev and dstImg into single array to reduce branching and mem access
+  use bitstring for interior
+
+  */
+
   // book keeping
+  STARTCLOCK(bookKeeping);
 
   recombineChannels<<<blocks, threads>>>(d_blendedImg, d_dstImg_r, d_dstImg_g, d_dstImg_b, numPixels);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 
   checkCudaErrors(cudaMemcpy(h_blendedImg, d_blendedImg, imageSize, cudaMemcpyDeviceToHost));  // copy results to host
+
+  ENDCLOCK(bookKeeping);
   
   /* To Recap here are the steps you need to implement
   
