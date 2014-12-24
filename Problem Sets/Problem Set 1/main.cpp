@@ -14,7 +14,7 @@ void your_rgba_to_greyscale(const uchar4 * const h_rgbaImage,
                             size_t numRows, size_t numCols);
 
 //include the definitions of the above functions for this homework
-#include "HW1.cpp"
+#include "HW1.h"
 
 int main(int argc, char **argv) {
   uchar4        *h_rgbaImage, *d_rgbaImage;
