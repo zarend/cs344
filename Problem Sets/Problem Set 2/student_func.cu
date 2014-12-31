@@ -110,61 +110,79 @@
 #define TEMP_PRINT(a) 
 //#define TEMP_PRINT(a) if(xOffset == 4 && yOffset == 4) { printf(#a);}
 
+#define MAX(a, b) (a) > (b) ? (a) : (b)
+#define MIN(a, b) (a) < (b) ? (a) : (b)
+
 __global__
 void gaussian_blur(const unsigned char* const inputChannel,
                    unsigned char* const outputChannel,
                    int numRows, int numCols,
                    const float* const filter, const int filterWidth)
 {
-  // TODO
-  
-  // NOTE: Be sure to compute any intermediate results in floating point
-  // before storing the final result as unsigned char.
-
-  // NOTE: Be careful not to try to access memory that is outside the bounds of
-  // the image. You'll want code that performs the following check before accessing
-  // GPU memory:
-  //
-  // if ( absolute_image_position_x >= numCols ||
-  //      absolute_image_position_y >= numRows )
-  // {
-  //     return;
-  // }
-  
-  // NOTE: If a thread's absolute position 2D position is within the image, but some of
-  // its neighbors are outside the image, then you will need to be extra careful. Instead
-  // of trying to read such a neighbor value from GPU memory (which won't work because
-  // the value is out of bounds), you should explicitly clamp the neighbor values you read
-  // to be within the bounds of the image. If this is not clear to you, then please refer
-  // to sequential reference solution for the exact clamping semantics you should follow.
-
   int col = blockIdx.x*blockDim.x + threadIdx.x;
   int row = blockIdx.y*blockDim.y + threadIdx.y;
 
   if (row < numRows && col < numCols) {
+    extern __shared__ float sharedFilter[];
+    size_t tIdx = threadIdx.x + threadIdx.y * blockDim.x;
+    if (tIdx < filterWidth * filterWidth) {
+      sharedFilter[tIdx] = filter[tIdx];
+    }
+    __syncthreads();
+
     float total = 0.0;
 
     for (int filterRow = -filterWidth/2; filterRow <= filterWidth/2; filterRow++) {
       for (int filterCol = -filterWidth/2; filterCol <= filterWidth/2; filterCol++) {
-        int currCol = col + filterCol;
-        int currRow = row + filterRow;
+        int currCol = MIN(MAX(col + filterCol, 0), numCols - 1);
+        int currRow = MIN(MAX(row + filterRow, 0), numRows - 1);
 
-        currCol = currCol >= 0 ? currCol : 0;
-        currRow = currRow >= 0 ? currRow : 0;
+        float imageVal = static_cast<float>(inputChannel[currRow*numCols + currCol]);
+        float filterVal = sharedFilter[(filterRow + filterWidth/2) * filterWidth + filterCol + filterWidth/2];
 
-        currCol = currCol < numCols ? currCol : numCols - 1;
-        currRow = currRow < numRows ? currRow : numRows - 1;
-
-        if (currCol >= 0 && currCol < numCols && currRow >= 0 && currRow < numRows) {
-          float imageVal = static_cast<float>(inputChannel[currRow*numCols + currCol]);
-          float filterVal = filter[(filterRow + filterWidth/2) * filterWidth + filterCol + filterWidth/2];
-
-          total += imageVal*filterVal;
-        }
+        total += imageVal*filterVal;
       }
     }
 
     outputChannel[row*numCols + col] = total;
+  }
+
+}
+
+__global__
+void gaussian_blur2(const unsigned char* const inputChannel,
+                   unsigned char* const outputChannel,
+                   int numRows, int numCols,
+                   const float* const filter, const int filterWidth,
+                   const int colsPerThread, const int rowsPerThread)
+{
+  int col = blockIdx.x*blockDim.x + threadIdx.x;
+  int initialRow = blockIdx.y*blockDim.y + threadIdx.y;
+
+  col *= colsPerThread;
+  initialRow *= rowsPerThread;
+
+  for (int i = 0; i < colsPerThread; i++, col++) {
+    int row = initialRow;
+    for (int j = 0; j < rowsPerThread; j++, row++) {
+      if (row < numRows && col < numCols) {
+        float total = 0.0;
+
+        for (int filterRow = -filterWidth/2; filterRow <= filterWidth/2; filterRow++) {
+          for (int filterCol = -filterWidth/2; filterCol <= filterWidth/2; filterCol++) {
+            int currCol = MIN(MAX(col + filterCol, 0), numCols - 1);
+            int currRow = MIN(MAX(row + filterRow, 0), numRows - 1);
+
+            float imageVal = static_cast<float>(inputChannel[currRow*numCols + currCol]);
+            float filterVal = filter[(filterRow + filterWidth/2) * filterWidth + filterCol + filterWidth/2];
+
+            total += imageVal*filterVal;
+          }
+        }
+
+        outputChannel[row*numCols + col] = total;
+      }
+    }
   }
 
 }
@@ -299,13 +317,28 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
   //const dim3 blockSize(1);
   //const dim3 gridSize(numCols, numRows, 1);
 
-  printf("numRows: %d, numCols: %d\n", numRows, numCols);
+  //printf("numRows: %d, numCols: %d\n", numRows, numCols);
+  //printf("filterWidth: %d\n", filterWidth); // "filterWidth: 9"
 
-  gaussian_blur<<<gridSize, blockSize>>>(d_red, d_redBlurred, numRows, numCols, d_filter, filterWidth);
+  const size_t sharedSize = filterWidth * filterWidth * sizeof(float);
+
+  gaussian_blur<<<gridSize, blockSize, sharedSize>>>(d_red, d_redBlurred, numRows, numCols, d_filter, filterWidth);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-  gaussian_blur<<<gridSize, blockSize>>>(d_green, d_greenBlurred, numRows, numCols, d_filter, filterWidth);
+  gaussian_blur<<<gridSize, blockSize, sharedSize>>>(d_green, d_greenBlurred, numRows, numCols, d_filter, filterWidth);
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-  gaussian_blur<<<gridSize, blockSize>>>(d_blue, d_blueBlurred, numRows, numCols, d_filter, filterWidth);
+  gaussian_blur<<<gridSize, blockSize, sharedSize>>>(d_blue, d_blueBlurred, numRows, numCols, d_filter, filterWidth);
+
+  /*size_t numColsPerThread = 4;
+  size_t numRowsPerThread = 4;
+
+  const dim3 blockSize2(SQRT_MAX_THREADS_PER_BLOCK/2, SQRT_MAX_THREADS_PER_BLOCK/2, 1);
+  const dim3 gridSize2(numCols/blockSize2.x/numColsPerThread + 1, numRows/blockSize2.y/numRowsPerThread + 1, 1);
+
+  gaussian_blur2<<<gridSize2, blockSize2>>>(d_red, d_redBlurred, numRows, numCols, d_filter, filterWidth, numColsPerThread, numRowsPerThread);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+  gaussian_blur2<<<gridSize2, blockSize2>>>(d_green, d_greenBlurred, numRows, numCols, d_filter, filterWidth, numColsPerThread, numRowsPerThread);
+  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+  gaussian_blur2<<<gridSize2, blockSize2>>>(d_blue, d_blueBlurred, numRows, numCols, d_filter, filterWidth, numColsPerThread, numRowsPerThread);*/
 
   // Again, call cudaDeviceSynchronize(), then call checkCudaErrors() immediately after
   // launching your kernel to make sure that you didn't make any mistakes.
