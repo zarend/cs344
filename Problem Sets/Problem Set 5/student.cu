@@ -27,17 +27,19 @@
 
 #include "utils.h"
 
+#define MAX_THREADS_PER_BLOCK 1024
+
 __global__
 void yourHisto(const unsigned int* const vals, //INPUT
                unsigned int* const histo,      //OUPUT
                int numVals)
 {
-  //TODO fill in this kernel to calculate the histogram
-  //as quickly as possible
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-  //Although we provide only one kernel skeleton,
-  //feel free to use more if it will help you
-  //write faster code
+  if (idx >= 0 && idx < numVals) {
+    int bin = vals[idx];
+    atomicAdd(histo + bin, 1);
+  }
 }
 
 void computeHistogram(const unsigned int* const d_vals, //INPUT
@@ -45,10 +47,8 @@ void computeHistogram(const unsigned int* const d_vals, //INPUT
                       const unsigned int numBins,
                       const unsigned int numElems)
 {
-  //TODO Launch the yourHisto kernel
+  const dim3 blockSize(MAX_THREADS_PER_BLOCK, 1, 1);
+  const dim3 gridSize(numElems / blockSize.x + 1);
 
-  //if you want to use/launch more than one kernel,
-  //feel free
-
-  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+  yourHisto<<<gridSize, blockSize>>>(d_vals, d_histo, numElems);
 }
